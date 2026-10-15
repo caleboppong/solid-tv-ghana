@@ -1,0 +1,24 @@
+create extension if not exists pgcrypto;
+create table if not exists public.profiles(id uuid primary key references auth.users(id) on delete cascade,email text,role text not null default 'visitor' check(role in ('visitor','staff','editor','admin','super_admin')),created_at timestamptz default now());
+create table if not exists public.news(id uuid primary key default gen_random_uuid(),title text not null,body text not null,category text not null default 'News',published boolean not null default false,author_id uuid references auth.users(id),created_at timestamptz default now());
+create table if not exists public.videos(id uuid primary key default gen_random_uuid(),title text not null,url text not null,video_id text,platform text not null default 'youtube',published boolean not null default false,author_id uuid references auth.users(id),created_at timestamptz default now());
+create table if not exists public.contact_messages(id uuid primary key default gen_random_uuid(),name text not null,email text not null,subject text not null,message text not null,created_at timestamptz default now());
+create or replace function public.my_role() returns text language sql stable security definer set search_path=public as $$select coalesce((select role from public.profiles where id=auth.uid()),'visitor')$$;
+create or replace function public.is_editor() returns boolean language sql stable as $$select public.my_role() in ('staff','editor','admin','super_admin')$$;
+create or replace function public.is_admin() returns boolean language sql stable as $$select public.my_role() in ('admin','super_admin')$$;
+alter table public.profiles enable row level security;alter table public.news enable row level security;alter table public.videos enable row level security;alter table public.contact_messages enable row level security;
+create policy "profile self or admin read" on public.profiles for select to authenticated using(id=auth.uid() or public.is_admin());
+create policy "news public read" on public.news for select using(published or public.is_editor());
+create policy "news staff insert" on public.news for insert to authenticated with check(public.is_editor() and author_id=auth.uid());
+create policy "news staff update" on public.news for update to authenticated using(public.is_admin() or (public.is_editor() and author_id=auth.uid())) with check(public.is_admin() or (public.is_editor() and author_id=auth.uid()));
+create policy "news staff delete" on public.news for delete to authenticated using(public.is_admin() or (public.is_editor() and author_id=auth.uid()));
+create policy "videos public read" on public.videos for select using(published or public.is_editor());
+create policy "videos staff insert" on public.videos for insert to authenticated with check(public.is_editor() and author_id=auth.uid());
+create policy "videos staff update" on public.videos for update to authenticated using(public.is_admin() or (public.is_editor() and author_id=auth.uid())) with check(public.is_admin() or (public.is_editor() and author_id=auth.uid()));
+create policy "videos staff delete" on public.videos for delete to authenticated using(public.is_admin() or (public.is_editor() and author_id=auth.uid()));
+create policy "contact public submit" on public.contact_messages for insert to anon,authenticated with check(char_length(message) between 1 and 10000);
+create policy "contact admin read" on public.contact_messages for select to authenticated using(public.is_admin());
+create or replace function public.create_profile() returns trigger language plpgsql security definer set search_path=public as $$begin insert into public.profiles(id,email,role) values(new.id,new.email,'visitor');return new;end$$;
+drop trigger if exists on_auth_user_created on auth.users;create trigger on_auth_user_created after insert on auth.users for each row execute function public.create_profile();
+-- Bootstrap the first admin manually in Supabase SQL editor after creating an auth user:
+-- update public.profiles set role='super_admin' where email='YOUR_ADMIN_EMAIL';
